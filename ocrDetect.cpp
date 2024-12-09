@@ -14,7 +14,6 @@ ocrDetect::ocrDetect()
 
 bool ocrDetect::dataVerify(const std::vector<TextLine>& recResult)
 {
-    // Check if there are two lines of text
     if (recResult.size() != 2)
         return false;
 
@@ -66,6 +65,7 @@ int ocrDetect::getDetectResult(cv::Mat& image)
 
     int ret_code = 0;
 
+    // 样品瓶在旋转，可能会存在一行、两行的情形
     if (boxResult.size() > 0)
     {
         recResult.resize(boxResult.size());
@@ -74,10 +74,11 @@ int ocrDetect::getDetectResult(cv::Mat& image)
         BoxSorter sorter;
         sorter.data = boxResult;
         std::vector<TextBox> sortedBoxResult = sorter.sortByCoordinates();
-
+        // Process ocr results
         if (sortedBoxResult.size() > 0)
         {
-            for (size_t i = 0; i < sortedBoxResult.size(); i++) {
+            for (size_t i = 0; i < sortedBoxResult.size(); i++)
+            {
                 // Get the rotated cropped image
                 cv::Mat partImg = getRotateCropImage(image, sortedBoxResult[i].boxPoint);
                 // Use recNet for character recognition
@@ -93,28 +94,29 @@ int ocrDetect::getDetectResult(cv::Mat& image)
                 cv::putText(image, recResult[i].text, sortedBoxResult[i].boxPoint[0],
                     cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 255), 1);
             }
-            // Verify the recognition result
-            bool isReal = dataVerify(recResult);
-
-            // Draw "OK" or "NG" at the top-left corner of the image
-            std::string statusText = isReal ? "OK" : "NG";
-            cv::Scalar statusColor = isReal ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
-
-            cv::putText(image, statusText, cv::Point(10, 30), // Position
-                cv::FONT_HERSHEY_SIMPLEX, 1, // Font type and size
-                statusColor, // Font color
-                5); // Font thickness
-
-            if (isReal)
-            {
-                ret_code = 1;  // Indicates the detection is OK
-            }
-            else
-            {
-                ret_code = 2;  // Indicates the detection is NG
-            }
-            return ret_code;
         }
+
+        // Verify the recognition result
+        bool isReal = dataVerify(recResult);
+
+        // Draw "OK" or "NG" at the top-left corner of the image
+        std::string statusText = isReal ? "OK" : "NG";
+        cv::Scalar statusColor = isReal ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
+
+        cv::putText(image, statusText, cv::Point(10, 30), // Position
+            cv::FONT_HERSHEY_SIMPLEX, 1, // Font type and size
+            statusColor, // Font color
+            5); // Font thickness
+
+        if (isReal)
+        {
+            ret_code = 1;  // Indicates the detection is OK
+        }
+        else
+        {
+            ret_code = 2;  // Indicates the detection is NG
+        }
+        return ret_code;
     }
 
     return ret_code;

@@ -72,6 +72,7 @@ private:
     static bool g_captureSignal;  // 外部信号
 
     static int send_index;  // 静态成员变量
+    static int count_ok;  // 用于统计是否检测过OK
     static unsigned __stdcall frameGrabbingProc(void* pUserData);
 
 signals:
@@ -79,6 +80,7 @@ signals:
     void sendRegistorsDataSignal();  // 新增信号，通知主线程执行 sendRegistorsData
     void displayImage(const QImage& image);
     void displayDetectResult(int ret_code);
+    void displayDetectImage(const QImage& detectImage);
 
 private slots:
     void on_connect_modbus_clicked();
@@ -90,6 +92,7 @@ private slots:
     void onSendRegistorsDataSlot();  // 槽函数，用于接收信号并执行 sendRegistorsData
     void updateImageDisplay(const QImage& image);
     void updateDetectResultDisplay(int ret_code);
+    void updateDetectImageDisplay(const QImage& image);
 
     void on_modbus_stateChanged(QModbusDevice::State state);
     void on_modbus_errorOccurred(QModbusDevice::Error error);

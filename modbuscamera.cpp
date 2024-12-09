@@ -5,6 +5,7 @@ bool modbusCamera::g_captureSignal = false;
 bool modbusCamera::g_isExitThread = false;  // 控制线程退出
 modbusCamera* modbusCamera::instance = nullptr;  // 初始化静态实例指针
 int modbusCamera::send_index = 0;
+int modbusCamera::count_ok = 0;
 
 modbusCamera::modbusCamera(QWidget *parent)
     : QMainWindow(parent)
@@ -22,6 +23,7 @@ modbusCamera::modbusCamera(QWidget *parent)
     connect(this, &modbusCamera::sendRegistorsDataSignal, this, &modbusCamera::onSendRegistorsDataSlot);  // 连接信号与槽
     connect(this, &modbusCamera::displayImage, this, &modbusCamera::updateImageDisplay);
     connect(this, &modbusCamera::displayDetectResult, this, &modbusCamera::updateDetectResultDisplay);
+    connect(this, &modbusCamera::displayDetectImage, this, &modbusCamera::updateDetectImageDisplay);
 
     // 初始化寄存器
     connect(timer, &QTimer::timeout, this, &modbusCamera::readRegistersData);
@@ -35,8 +37,6 @@ modbusCamera::modbusCamera(QWidget *parent)
 
 modbusCamera::~modbusCamera()
 {
-    delete ui;
-
     // 停止相机采集和释放资源
     g_isExitThread = true;
     if (threadHandle != nullptr)
@@ -52,6 +52,9 @@ modbusCamera::~modbusCamera()
         IMV_DestroyHandle(devHandle);
         devHandle = nullptr;
     }
+
+    // 删除UI资源
+    delete ui;
 }
 
 // 枚举设备并加载到 ComboBox
@@ -160,6 +163,7 @@ void modbusCamera::replyRegistersData()
             else
             {
                 g_captureSignal = false;
+                count_ok = 0;  // 将count_ok置0,为检测做准备
             }
 
             QString s;
@@ -186,45 +190,61 @@ unsigned __stdcall modbusCamera::frameGrabbingProc(void* pUserData)
 
     while (!g_isExitThread)
     {
-        // 检查外部信号，信号为true采集图像
-        if (g_captureSignal)
+        ret = IMV_GetFrame(devHandle, &frame, 100);
+        if (IMV_OK != ret)
         {
-            ret = IMV_GetFrame(devHandle, &frame, 100);
-            if (IMV_OK != ret)
-            {
-                qDebug() << "Get frame failed! ErrorCode[" << ret << "]";
-                continue;
-            }
+            qDebug() << "Get frame failed! ErrorCode[" << ret << "]";
+            continue;
+        }
 
-            cv::Mat image;
-            instance->frameToCVImage(frame, image);
+        cv::Mat image;
+        instance->frameToCVImage(frame, image);
 
-            // 进行检测
+        // 如果没发送检测信号，只将相机拍照的结果显示在UI上
+        if (!g_captureSignal)
+        {
+            // 将OpenCV图像转化为QImage，并通过信号传递给主线程
+            QImage qImage = instance->cvMatToQImage(image);
+            qDebug() << "Emitting displayImage signal...";
+            emit instance->displayImage(qImage);   // 发送信号，通知主线程更新UI
+        }
+        else  // 接收到检测信号
+        {
+            // 进行检测(0:表示未检测到字符(初始状态),1:表示检测到两行字符并且验证OK，2:表示检测到两行字符并且验证NG，或未检测到两行字符(一行或多于两行））
             int ret_code = instance->ocrDet.getDetectResult(image);
-
             // 将OpenCV图像转化为QImage，并通过信号传递给主线程
             QImage qImage = instance->cvMatToQImage(image);
             qDebug() << "Emitting displayImage signal...";
             emit instance->displayImage(qImage);   // 发送信号，通知主线程更新UI
             emit instance->displayDetectResult(ret_code);  // 发送检测结果
 
-            // 0 表示未检测到标签，1表示标签OK，2表示标签NG
-            instance->send_index = ret_code;
-            emit instance->sendRegistorsDataSignal();   // 发送信号，通知主线程执行
-
-            ret = IMV_ReleaseFrame(devHandle, &frame);
-            if (IMV_OK != ret)
+            // 根据ret_code判断展示是否向PLC输出结果
+            send_index = ret_code;
+            if (send_index == 1)
             {
-                emit instance->updateTextEdit("Release frame failed!");
+                count_ok += 1; // 用于统计当前样品瓶检测时,检测出OK的次数
+            }
+
+            emit instance->updateTextEdit("count_ok: " + QString::number(count_ok) + " send_index: " + QString::number(send_index));
+            // 用于判断是否发送结果到PLC(当只检测到NG图像时，更新图像发信号，当第一次检测到OK图像时,更新图像发信号
+            if (((count_ok == 0) && (send_index == 2)) || ((count_ok == 1) && (send_index == 1)))
+            {
+                emit instance->displayDetectImage(qImage);  // 发送检测OK/NG结果
+                emit instance->sendRegistorsDataSignal();   // 发送信号，通知主线程执行
             }
 
             // 将信号置为false
             g_captureSignal = false;
         }
 
+        ret = IMV_ReleaseFrame(devHandle, &frame);
+        if (IMV_OK != ret)
+        {
+            emit instance->updateTextEdit("Release frame failed!");
+        }
+
         QThread::msleep(10);
     }
-
     return 0;
 }
 
@@ -415,6 +435,7 @@ void modbusCamera::on_disconnect_modbus_clicked()
     ui->textEdit->clear();
     ui->image_label->clear();
     ui->light_label->clear();
+    ui->det_image_label->clear();
 
     // 停止定时器读取寄存器数据
     if (timer != nullptr)
@@ -429,6 +450,9 @@ void modbusCamera::on_disconnect_modbus_clicked()
     // 将disconnect按钮失效
     ui->connect_modbus->setEnabled(true);
     ui->disconnect_modbus->setEnabled(true);
+
+    // 将count_ok置0
+    count_ok = 0;
 }
 
 void modbusCamera::on_comboBox_activated(int index)
@@ -499,6 +523,24 @@ void modbusCamera::updateDetectResultDisplay(int ret_code)
     ui->light_label->setPixmap(QPixmap::fromImage(image).scaled(ui->light_label->size(), Qt::KeepAspectRatio));
     ui->light_label->update();
 }
+
+void modbusCamera::updateDetectImageDisplay(const QImage& detectImage)
+{
+    // 在主线程中更新显示检测图像的 QLabel
+    if (QThread::currentThread() != QCoreApplication::instance()->thread())
+    {
+        QMetaObject::invokeMethod(this, [this, detectImage]{
+            // 更新 ui 上的检测图像标签
+            ui->det_image_label->setPixmap(QPixmap::fromImage(detectImage).scaled(ui->det_image_label->size(), Qt::KeepAspectRatio));
+        });
+        return;
+    }
+
+    // 如果已经在主线程，直接更新
+    ui->det_image_label->setPixmap(QPixmap::fromImage(detectImage).scaled(ui->det_image_label->size(), Qt::KeepAspectRatio));
+    ui->det_image_label->update();
+}
+
 
 void modbusCamera::frameToCVImage(const IMV_Frame& pFrame, cv::Mat& image)
 {
